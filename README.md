@@ -1,4 +1,29 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Price Spread Analyzer
+
+Real-time cryptocurrency price spread analyzer comparing any DEX or CEX exchanges.
+
+## Features
+
+- ✨ **Flexible Source Selection**: Compare any combination of DEX-DEX, CEX-CEX, or DEX-CEX
+- 📊 **Interactive Charts**: Lightweight Charts (TradingView) with hover tooltips
+- ⏱️ **Multiple Timeframes**: 1m, 3m, 5m, 15m, 30m, 1h, 4h, 1d
+- 📈 **Real-time Spread Analysis**: Live calculation of price differences
+- 🎯 **Arbitrage Detection**: Identify profitable trading opportunities
+
+## Supported Exchanges
+
+### CEX (Centralized Exchanges)
+- Binance, OKX, Bybit, Coinbase, Kraken
+
+### DEX (Decentralized Exchanges)
+- Uniswap (Ethereum/Arbitrum), PancakeSwap (BSC), SushiSwap, Curve
+
+## Tech Stack
+
+- **Framework**: Next.js 15 with TypeScript
+- **Styling**: Tailwind CSS
+- **Charts**: Lightweight Charts
+- **API Client**: Axios
 
 ## Getting Started
 
