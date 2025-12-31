@@ -36,9 +36,21 @@ export default function RealTimeMonitor({ isOpen, onClose, config }: RealTimeMon
 
   // Thêm trạng thái bật/tắt âm cho từng zone
   const [zoneSoundEnabled, setZoneSoundEnabled] = useState(alertZones.map(() => true));
-  // Đồng bộ khi thêm/xóa zone
+  const zoneSoundEnabledRef = useRef(zoneSoundEnabled);
   useEffect(() => {
-    setZoneSoundEnabled(z => alertZones.map((_, i) => z[i] ?? true));
+    zoneSoundEnabledRef.current = zoneSoundEnabled;
+  }, [zoneSoundEnabled]);
+  // Luôn đồng bộ zoneSoundEnabled với alertZones (kể cả khi thêm/xóa/sửa)
+  useEffect(() => {
+    setZoneSoundEnabled(z => {
+      if (alertZones.length > z.length) {
+        return [...z, ...Array(alertZones.length - z.length).fill(true)];
+      }
+      if (alertZones.length < z.length) {
+        return z.slice(0, alertZones.length);
+      }
+      return z;
+    });
   }, [alertZones.length]);
 
   // Initialize audio
@@ -116,18 +128,21 @@ export default function RealTimeMonitor({ isOpen, onClose, config }: RealTimeMon
   const triggerAlert = (spread: SpreadData) => {
     const now = Date.now();
     const spreadValue = spread.spreadPercent;
-    let matched = false;
+    let played = false;
+    const zoneSoundArr = zoneSoundEnabledRef.current;
     alertZones.forEach((zone, idx) => {
-      if (((zone.op === '>' && spreadValue > zone.value) || (zone.op === '<' && spreadValue < zone.value)) && zoneSoundEnabled[idx]) {
-        console.log('[DEBUG] triggerAlert: matched zone', zone, 'soundEnabled:', soundEnabled, 'cooldown:', now - lastAlertTime.current, '>=', alertCooldown * 1000);
+      if (played) return;
+      if ((zone.op === '>' && spreadValue > zone.value) || (zone.op === '<' && spreadValue < zone.value)) {
+        console.log('[DEBUG] triggerAlert: matched zone', zone, 'zoneSoundEnabled:', zoneSoundArr[idx], 'soundEnabled:', soundEnabled, 'cooldown:', now - lastAlertTime.current, '>=', alertCooldown * 1000);
         if (now - lastAlertTime.current >= alertCooldown * 1000) {
-          if (soundEnabled) {
+          if (soundEnabled && zoneSoundArr[idx]) {
             console.log('[DEBUG] triggerAlert: playSound called, about to call playSound()');
             playSound(zone.sound || 'https://tiengdong.com/wp-content/uploads/am-thanh-wow-www_tiengdong_com.mp3');
+            played = true;
+            lastAlertTime.current = now;
           } else {
-            console.log('[DEBUG] triggerAlert: soundEnabled is false, skip playSound');
+            console.log('[DEBUG] triggerAlert: sound disabled for this zone, skip playSound');
           }
-          lastAlertTime.current = now;
           setAlertHistory(prev => [
             {
               timestamp: now,
@@ -146,7 +161,6 @@ export default function RealTimeMonitor({ isOpen, onClose, config }: RealTimeMon
         } else {
           console.log('[DEBUG] triggerAlert: cooldown not met');
         }
-        matched = true;
       }
     });
     // Không set cooldown nếu không có zone nào thỏa mãn
@@ -229,7 +243,10 @@ export default function RealTimeMonitor({ isOpen, onClose, config }: RealTimeMon
                 ＋
               </button>
               <button
-                onClick={onClose}
+                onClick={() => {
+                  setIsMonitoring(false);
+                  onClose();
+                }}
                 className="text-gray-400 hover:text-white text-xl font-bold px-2"
                 title="Đóng"
               >
@@ -268,7 +285,13 @@ export default function RealTimeMonitor({ isOpen, onClose, config }: RealTimeMon
               <div key={idx} className="flex items-center gap-2" style={{ fontFamily: 'Segoe UI, Arial, sans-serif' }}>
                 <span style={{ color: '#fff', fontWeight: 700 }}>{zone.op} {zone.value}</span>
                 <button
-                  onClick={() => setZoneSoundEnabled(z => z.map((v, i) => i === idx ? !v : v))}
+                  onClick={() => {
+                    setZoneSoundEnabled(z => {
+                      const newArr = z.map((v, i) => i === idx ? !v : v);
+                      console.log('[DEBUG] Minimized: Toggle sound for zone', idx, 'from', z[idx], 'to', newArr[idx], newArr);
+                      return newArr;
+                    });
+                  }}
                   className={`w-6 h-6 rounded-full flex items-center justify-center ${zoneSoundEnabled[idx] ? '' : 'bg-gray-600'}`}
                   style={{ background: zoneSoundEnabled[idx] ? '#22c55e' : '#374151' }}
                   title={zoneSoundEnabled[idx] ? 'Tắt âm dòng này' : 'Bật âm dòng này'}
@@ -307,7 +330,10 @@ export default function RealTimeMonitor({ isOpen, onClose, config }: RealTimeMon
               &minus;
             </button>
             <button
-              onClick={onClose}
+              onClick={() => {
+                setIsMonitoring(false);
+                onClose();
+              }}
               className="text-gray-400 hover:text-white text-2xl leading-none"
               title="Đóng"
             >
