@@ -217,7 +217,7 @@ export default function Home() {
       zoneStats[key].maxDuration = durations.length > 0 ? Math.max(...durations) : 0;
       
       zoneStats[key].avgInterval = intervals.length > 0
-        ? intervals.reduce((a, b) => a + b, 0) / intervals.length
+        ? intervals.reduce((a: number, b: number) => a + b, 0) / intervals.length
         : 0;
       
       zoneStats[key].minInterval = intervals.length > 0 ? Math.min(...intervals) : 0;
