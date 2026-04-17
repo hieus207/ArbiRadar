@@ -80,6 +80,11 @@ export const PRICE_SOURCES: PriceSource[] = [
     name: 'Hyperliquid (Perp)',
     type: 'DEX',
   },
+  {
+    id: 'aster',
+    name: 'Aster DEX (Perp)',
+    type: 'DEX',
+  },
 ];
 
 // Supported trading pairs by source
@@ -104,6 +109,7 @@ export const SUPPORTED_PAIRS: Record<string, string[]> = {
   // Perp DEX - use symbol format
   'lighter': ['CUSTOM_SYMBOL'],
   'hyperliquid': ['CUSTOM_SYMBOL'],
+  'aster': ['CUSTOM_SYMBOL'],
 };
 
 // Chain mapping for DEX

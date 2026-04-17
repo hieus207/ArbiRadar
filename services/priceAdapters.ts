@@ -554,6 +554,67 @@ export class HyperliquidAdapter extends PriceSourceAdapter {
 export class HyperliquidSpotAdapter extends HyperliquidAdapter {}
 export class HyperliquidFuturesAdapter extends HyperliquidAdapter {}
 
+// Aster DEX Perpetual Adapter
+export class AsterAdapter extends PriceSourceAdapter {
+  private baseUrl = 'https://www.asterdex.com/fapi/v1';
+
+  async fetchKlineData(
+    symbol: string,
+    timeframe: TimeFrame,
+    limit = 100
+  ): Promise<PriceDataPoint[]> {
+    try {
+      // Aster uses same interval format as Binance
+      const interval = timeframe;
+      
+      // Calculate time range (milliseconds)
+      const endTime = Date.now();
+      const timeframeMs: Record<TimeFrame, number> = {
+        '1m': 60 * 1000,
+        '3m': 3 * 60 * 1000,
+        '5m': 5 * 60 * 1000,
+        '15m': 15 * 60 * 1000,
+        '30m': 30 * 60 * 1000,
+        '1h': 60 * 60 * 1000,
+        '4h': 4 * 60 * 60 * 1000,
+        '1d': 24 * 60 * 60 * 1000,
+      };
+      const startTime = endTime - (limit * timeframeMs[timeframe]);
+
+      console.log(`Aster DEX fetching: ${symbol}, interval: ${interval}`);
+
+      const response = await axios.get(`${this.baseUrl}/klines`, {
+        params: {
+          symbol,
+          interval,
+          contractType: 'PERPETUAL',
+          startTime,
+          endTime,
+          limit,
+        },
+      });
+
+      console.log('Aster DEX response:', response.data);
+
+      if (!response.data || !Array.isArray(response.data)) {
+        console.error('Aster DEX returned no data');
+        return [];
+      }
+
+      // Binance-style response format: [openTime, open, high, low, close, ...]
+      const data = response.data.map((item: any) => ({
+        time: Math.floor(parseInt(item[0]) / 1000), // Convert ms to seconds
+        value: parseFloat(item[4]), // Close price
+      }));
+
+      return data.sort((a: any, b: any) => a.time - b.time);
+    } catch (error) {
+      console.error('Aster DEX API error:', error);
+      return [];
+    }
+  }
+}
+
 // Factory to get the right adapter
 export class PriceSourceFactory {
   static getAdapter(sourceId: string): PriceSourceAdapter {
@@ -590,6 +651,8 @@ export class PriceSourceFactory {
       case 'hyperliquid-futures':
       case 'hyperliquid':
         return new HyperliquidAdapter();
+      case 'aster':
+        return new AsterAdapter();
       default:
         throw new Error(`Unsupported source: ${sourceId}`);
     }
