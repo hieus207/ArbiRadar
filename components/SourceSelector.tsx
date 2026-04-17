@@ -49,10 +49,10 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
   }, []);
 
   const isDexSource = (source: PriceSource) => source.type === 'DEX';
-  const isLighterDex = (source: PriceSource) => source.id === 'lighter-dex';
-  const isContractDex = (source: PriceSource) => isDexSource(source) && !isLighterDex(source);
+  const isContractDex = (source: PriceSource) => 
+    SUPPORTED_PAIRS[source.id]?.[0] === 'CONTRACT_ADDRESS';
   const isCustomSymbol = (source: PriceSource) =>
-    source.id === 'binance-spot' || source.id === 'binance-futures';
+    SUPPORTED_PAIRS[source.id]?.[0] === 'CUSTOM_SYMBOL';
 
   const handleAnalyze = () => {
     onConfigChange({
@@ -80,12 +80,13 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
               const selected = PRICE_SOURCES.find((s) => s.id === e.target.value);
               if (selected) {
                 setSource1(selected);
-                if (selected.id === 'lighter-dex') {
-                  setSymbol1('BTCUSD');
-                } else if (selected.type === 'DEX') {
+                const firstPair = SUPPORTED_PAIRS[selected.id]?.[0];
+                if (firstPair === 'CONTRACT_ADDRESS') {
                   setSymbol1('');
-                } else {
+                } else if (firstPair === 'CUSTOM_SYMBOL') {
                   setSymbol1('BTCUSDT');
+                } else {
+                  setSymbol1(firstPair || 'BTCUSDT');
                 }
               }
             }}
@@ -100,21 +101,13 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
           {/* Symbol/Contract input for Source 1 */}
           <div className="mt-2">
             <label className="block text-xs text-gray-400 mb-1">
-              {isLighterDex(source1) ? 'Symbol' : isContractDex(source1) ? 'Contract Address' : isCustomSymbol(source1) ? 'Symbol' : 'Trading Pair'}
+              {isContractDex(source1) ? 'Contract Address' : isCustomSymbol(source1) ? 'Symbol' : 'Trading Pair'}
             </label>
-            {isLighterDex(source1) ? (
+            {isCustomSymbol(source1) ? (
               <input
                 type="text"
                 value={symbol1}
-                onChange={(e) => setSymbol1(e.target.value.toUpperCase())}
-                placeholder="BTCUSD, ETHUSD, EURUSD"
-                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm"
-              />
-            ) : isCustomSymbol(source1) ? (
-              <input
-                type="text"
-                value={symbol1}
-                onChange={(e) => setSymbol1(e.target.value.toUpperCase())}
+                onChange={(e) => setSymbol1(e.target.value)}
                 placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
                 className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm"
               />
@@ -152,12 +145,13 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
               const selected = PRICE_SOURCES.find((s) => s.id === e.target.value);
               if (selected) {
                 setSource2(selected);
-                if (selected.id === 'lighter-dex') {
-                  setSymbol2('BTCUSD');
-                } else if (selected.type === 'DEX') {
+                const firstPair = SUPPORTED_PAIRS[selected.id]?.[0];
+                if (firstPair === 'CONTRACT_ADDRESS') {
                   setSymbol2('');
-                } else {
+                } else if (firstPair === 'CUSTOM_SYMBOL') {
                   setSymbol2('BTCUSDT');
+                } else {
+                  setSymbol2(firstPair || 'BTCUSDT');
                 }
               }
             }}
@@ -172,21 +166,13 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
           {/* Symbol/Contract input for Source 2 */}
           <div className="mt-2">
             <label className="block text-xs text-gray-400 mb-1">
-              {isLighterDex(source2) ? 'Symbol' : isContractDex(source2) ? 'Contract Address' : isCustomSymbol(source2) ? 'Symbol' : 'Trading Pair'}
+              {isContractDex(source2) ? 'Contract Address' : isCustomSymbol(source2) ? 'Symbol' : 'Trading Pair'}
             </label>
-            {isLighterDex(source2) ? (
+            {isCustomSymbol(source2) ? (
               <input
                 type="text"
                 value={symbol2}
-                onChange={(e) => setSymbol2(e.target.value.toUpperCase())}
-                placeholder="BTCUSD, ETHUSD, EURUSD"
-                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-red-500 focus:outline-none text-sm"
-              />
-            ) : isCustomSymbol(source2) ? (
-              <input
-                type="text"
-                value={symbol2}
-                onChange={(e) => setSymbol2(e.target.value.toUpperCase())}
+                onChange={(e) => setSymbol2(e.target.value)}
                 placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
                 className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-red-500 focus:outline-none text-sm"
               />

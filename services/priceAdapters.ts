@@ -138,9 +138,24 @@ export class OKXAdapter extends PriceSourceAdapter {
   }
 }
 
-// Bybit CEX Adapter
-export class BybitAdapter extends PriceSourceAdapter {
+// Bybit Spot Adapter
+export class BybitSpotAdapter extends PriceSourceAdapter {
   private baseUrl = 'https://api.bybit.com/v5';
+
+  // Convert timeframe to Bybit interval format
+  private convertTimeframe(timeframe: TimeFrame): string {
+    const intervalMap: Record<TimeFrame, string> = {
+      '1m': '1',
+      '3m': '3',
+      '5m': '5',
+      '15m': '15',
+      '30m': '30',
+      '1h': '60',
+      '4h': '240',
+      '1d': 'D',
+    };
+    return intervalMap[timeframe] || '1';
+  }
 
   async fetchKlineData(
     symbol: string,
@@ -148,24 +163,107 @@ export class BybitAdapter extends PriceSourceAdapter {
     limit = 100
   ): Promise<PriceDataPoint[]> {
     try {
+      const bybitSymbol = symbol.replace('/', '').replace('-', '').toUpperCase();
+      const interval = this.convertTimeframe(timeframe);
+      
+      console.log(`Bybit Spot fetching: ${bybitSymbol}, interval: ${interval}`);
+
       const response = await axios.get(`${this.baseUrl}/market/kline`, {
         params: {
           category: 'spot',
-          symbol: symbol.replace('/', ''),
-          interval: timeframe,
+          symbol: bybitSymbol,
+          interval,
           limit,
         },
       });
+
+      console.log('Bybit Spot response:', response.data);
+
+      if (!response.data || response.data.retCode !== 0) {
+        console.error('Bybit Spot API error:', response.data?.retMsg);
+        return [];
+      }
+
+      if (!response.data.result?.list || response.data.result.list.length === 0) {
+        console.error('Bybit Spot returned no data');
+        return [];
+      }
 
       return response.data.result.list.map((item: any) => ({
         time: Math.floor(parseInt(item[0]) / 1000),
         value: parseFloat(item[4]), // Close price
       })).reverse();
     } catch (error) {
-      console.error('Bybit API error:', error);
-      throw error;
+      console.error('Bybit Spot API error:', error);
+      return [];
     }
   }
+}
+
+// Bybit Futures Adapter
+export class BybitFuturesAdapter extends PriceSourceAdapter {
+  private baseUrl = 'https://api.bybit.com/v5';
+
+  // Convert timeframe to Bybit interval format
+  private convertTimeframe(timeframe: TimeFrame): string {
+    const intervalMap: Record<TimeFrame, string> = {
+      '1m': '1',
+      '3m': '3',
+      '5m': '5',
+      '15m': '15',
+      '30m': '30',
+      '1h': '60',
+      '4h': '240',
+      '1d': 'D',
+    };
+    return intervalMap[timeframe] || '1';
+  }
+
+  async fetchKlineData(
+    symbol: string,
+    timeframe: TimeFrame,
+    limit = 100
+  ): Promise<PriceDataPoint[]> {
+    try {
+      const bybitSymbol = symbol.replace('/', '').replace('-', '').toUpperCase();
+      const interval = this.convertTimeframe(timeframe);
+      
+      console.log(`Bybit Futures fetching: ${bybitSymbol}, interval: ${interval}`);
+
+      const response = await axios.get(`${this.baseUrl}/market/kline`, {
+        params: {
+          category: 'linear', // USDT perpetual
+          symbol: bybitSymbol,
+          interval,
+          limit,
+        },
+      });
+
+      console.log('Bybit Futures response:', response.data);
+
+      if (!response.data || response.data.retCode !== 0) {
+        console.error('Bybit Futures API error:', response.data?.retMsg);
+        return [];
+      }
+
+      if (!response.data.result?.list || response.data.result.list.length === 0) {
+        console.error('Bybit Futures returned no data');
+        return [];
+      }
+
+      return response.data.result.list.map((item: any) => ({
+        time: Math.floor(parseInt(item[0]) / 1000),
+        value: parseFloat(item[4]), // Close price
+      })).reverse();
+    } catch (error) {
+      console.error('Bybit Futures API error:', error);
+      return [];
+    }
+  }
+}
+
+// Deprecated: Use BybitSpotAdapter instead
+export class BybitAdapter extends BybitSpotAdapter {
 }
 
 // OKX DEX Adapter (supports multiple chains)
@@ -215,20 +313,20 @@ export class OKXDexAdapter extends PriceSourceAdapter {
   }
 }
 
-// Lighter DEX Adapter
-export class LighterDexAdapter extends PriceSourceAdapter {
+// Lighter Perpetual DEX Adapter
+export class LighterAdapter extends PriceSourceAdapter {
   private baseUrl = 'https://mainnet.zklighter.elliot.ai/api/v1';
   private explorerUrl = 'https://explorer.elliot.ai/api';
 
   // Lookup market_id from symbol
   private async getMarketId(symbol: string): Promise<number | null> {
     try {
-      console.log(`Lighter DEX looking up market_id for symbol: ${symbol}`);
+      console.log(`Lighter looking up market_id for symbol: ${symbol}`);
       
       const response = await axios.get(`${this.explorerUrl}/markets`);
       
       if (!response.data || !Array.isArray(response.data)) {
-        console.error('Lighter DEX markets API returned invalid data');
+        console.error('Lighter markets API returned invalid data');
         return null;
       }
 
@@ -248,7 +346,7 @@ export class LighterDexAdapter extends PriceSourceAdapter {
       console.log(`Found market_id ${market.market_index} for ${symbol}`);
       return market.market_index;
     } catch (error) {
-      console.error('Lighter DEX market lookup error:', error);
+      console.error('Lighter market lookup error:', error);
       return null;
     }
   }
@@ -259,16 +357,12 @@ export class LighterDexAdapter extends PriceSourceAdapter {
     limit = 100
   ): Promise<PriceDataPoint[]> {
     try {
-      // Lookup market_id from symbol
       const marketId = await this.getMarketId(symbol);
       if (marketId === null) {
         return [];
       }
 
-      // Lighter resolution format: 1m, 5m, 15m, 30m, 1h, 4h, 1d
       const resolution = timeframe;
-      
-      // Calculate time range (current time - limit * timeframe)
       const endTimestamp = Date.now();
       const timeframeMs: Record<TimeFrame, number> = {
         '1m': 60 * 1000,
@@ -282,7 +376,7 @@ export class LighterDexAdapter extends PriceSourceAdapter {
       };
       const startTimestamp = endTimestamp - (limit * timeframeMs[timeframe]);
 
-      console.log(`Lighter DEX fetching: market_id ${marketId}, resolution ${resolution}`);
+      console.log(`Lighter fetching: market_id ${marketId}, resolution ${resolution}`);
 
       const response = await axios.get(`${this.baseUrl}/candles`, {
         params: {
@@ -294,36 +388,39 @@ export class LighterDexAdapter extends PriceSourceAdapter {
         },
       });
 
-      console.log('Lighter DEX response:', response.data);
+      console.log('Lighter response:', response.data);
 
       if (!response.data || !response.data.c) {
-        console.error('Lighter DEX returned no data');
+        console.error('Lighter returned no data');
         return [];
       }
 
-      // Data is in response.data.c array
       const candles = response.data.c;
       
       if (candles.length === 0) {
-        console.error('Lighter DEX returned empty candles array');
+        console.error('Lighter returned empty candles array');
         return [];
       }
 
-      console.log('Lighter DEX candles count:', candles.length);
+      console.log('Lighter candles count:', candles.length);
 
       const data = candles.map((item: any) => ({
-        time: Math.floor(item.t / 1000), // Convert ms to seconds
-        value: parseFloat(item.c), // Close price
+        time: Math.floor(item.t / 1000),
+        value: parseFloat(item.c),
       }));
 
-      // Sort by time ascending
       return data.sort((a: any, b: any) => a.time - b.time);
     } catch (error) {
-      console.error('Lighter DEX API error:', error);
+      console.error('Lighter API error:', error);
       return [];
     }
   }
 }
+
+// Deprecated aliases
+export class LighterDexAdapter extends LighterAdapter {}
+export class LighterSpotAdapter extends LighterAdapter {}
+export class LighterFuturesAdapter extends LighterAdapter {}
 
 // GeckoTerminal DEX Adapter (fallback option)
 export class GeckoTerminalAdapter extends PriceSourceAdapter {
@@ -394,6 +491,69 @@ export class GeckoTerminalAdapter extends PriceSourceAdapter {
   }
 }
 
+// Hyperliquid Perpetual DEX Adapter
+export class HyperliquidAdapter extends PriceSourceAdapter {
+  private baseUrl = 'https://api.hyperliquid.xyz/info';
+
+  async fetchKlineData(
+    symbol: string,
+    timeframe: TimeFrame,
+    limit = 100
+  ): Promise<PriceDataPoint[]> {
+    try {
+      // Hyperliquid interval format: 1m, 5m, 15m, 1h, 4h, 1d
+      const interval = timeframe;
+      
+      // Calculate time range
+      const endTime = Date.now();
+      const timeframeMs: Record<TimeFrame, number> = {
+        '1m': 60 * 1000,
+        '3m': 3 * 60 * 1000,
+        '5m': 5 * 60 * 1000,
+        '15m': 15 * 60 * 1000,
+        '30m': 30 * 60 * 1000,
+        '1h': 60 * 60 * 1000,
+        '4h': 4 * 60 * 60 * 1000,
+        '1d': 24 * 60 * 60 * 1000,
+      };
+      const startTime = endTime - (limit * timeframeMs[timeframe]);
+
+      console.log(`Hyperliquid fetching: ${symbol}, interval: ${interval}`);
+
+      const response = await axios.post(this.baseUrl, {
+        type: 'candleSnapshot',
+        req: {
+          coin: symbol,
+          interval,
+          startTime,
+          endTime,
+        },
+      });
+
+      console.log('Hyperliquid response:', response.data);
+
+      if (!response.data || !Array.isArray(response.data)) {
+        console.error('Hyperliquid returned no data');
+        return [];
+      }
+
+      const data = response.data.map((item: any) => ({
+        time: Math.floor(item.t / 1000), // Convert ms to seconds
+        value: parseFloat(item.c), // Close price
+      }));
+
+      return data.sort((a: any, b: any) => a.time - b.time);
+    } catch (error) {
+      console.error('Hyperliquid API error:', error);
+      return [];
+    }
+  }
+}
+
+// Deprecated aliases
+export class HyperliquidSpotAdapter extends HyperliquidAdapter {}
+export class HyperliquidFuturesAdapter extends HyperliquidAdapter {}
+
 // Factory to get the right adapter
 export class PriceSourceFactory {
   static getAdapter(sourceId: string): PriceSourceAdapter {
@@ -405,8 +565,10 @@ export class PriceSourceFactory {
         return new BinanceFuturesAdapter();
       case 'okx':
         return new OKXAdapter();
-      case 'bybit':
-        return new BybitAdapter();
+      case 'bybit-spot':
+        return new BybitSpotAdapter();
+      case 'bybit-futures':
+        return new BybitFuturesAdapter();
       case 'dex-ethereum':
         return new GeckoTerminalAdapter('eth');
       case 'dex-bsc':
@@ -420,7 +582,14 @@ export class PriceSourceFactory {
       case 'dex-solana':
         return new GeckoTerminalAdapter('solana');
       case 'lighter-dex':
-        return new LighterDexAdapter();
+      case 'lighter-spot':
+      case 'lighter-futures':
+      case 'lighter':
+        return new LighterAdapter();
+      case 'hyperliquid-spot':
+      case 'hyperliquid-futures':
+      case 'hyperliquid':
+        return new HyperliquidAdapter();
       default:
         throw new Error(`Unsupported source: ${sourceId}`);
     }

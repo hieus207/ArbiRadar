@@ -19,8 +19,13 @@ export const PRICE_SOURCES: PriceSource[] = [
     type: 'CEX',
   },
   {
-    id: 'bybit',
-    name: 'Bybit',
+    id: 'bybit-spot',
+    name: 'Bybit Spot',
+    type: 'CEX',
+  },
+  {
+    id: 'bybit-futures',
+    name: 'Bybit Futures',
     type: 'CEX',
   },
   {
@@ -66,8 +71,13 @@ export const PRICE_SOURCES: PriceSource[] = [
     type: 'DEX',
   },
   {
-    id: 'lighter-dex',
-    name: 'Lighter DEX',
+    id: 'lighter',
+    name: 'Lighter (Perp)',
+    type: 'DEX',
+  },
+  {
+    id: 'hyperliquid',
+    name: 'Hyperliquid (Perp)',
     type: 'DEX',
   },
 ];
@@ -77,10 +87,11 @@ export const SUPPORTED_PAIRS: Record<string, string[]> = {
   // CEX pairs
   'binance-spot': ['CUSTOM_SYMBOL'],
   'binance-futures': ['CUSTOM_SYMBOL'],
-  okx: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ARBUSDT'],
-  bybit: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ARBUSDT'],
-  coinbase: ['BTC-USD', 'ETH-USD', 'SOL-USD'],
-  kraken: ['XBTUSD', 'ETHUSD', 'SOLUSD'],
+  okx: ['CUSTOM_SYMBOL'],
+  'bybit-spot': ['CUSTOM_SYMBOL'],
+  'bybit-futures': ['CUSTOM_SYMBOL'],
+  coinbase: ['CUSTOM_SYMBOL'],
+  kraken: ['CUSTOM_SYMBOL'],
   
   // DEX pairs - use contract address format
   'dex-ethereum': ['CONTRACT_ADDRESS'],
@@ -89,7 +100,10 @@ export const SUPPORTED_PAIRS: Record<string, string[]> = {
   'dex-polygon': ['CONTRACT_ADDRESS'],
   'dex-base': ['CONTRACT_ADDRESS'],
   'dex-solana': ['CONTRACT_ADDRESS'],
-  'lighter-dex': ['BTCUSD', 'ETHUSD', 'EURUSD'], // Use symbol, will lookup market_id
+  
+  // Perp DEX - use symbol format
+  'lighter': ['CUSTOM_SYMBOL'],
+  'hyperliquid': ['CUSTOM_SYMBOL'],
 };
 
 // Chain mapping for DEX
