@@ -1,7 +1,8 @@
 "use client";
 import { useState, useEffect } from 'react';
 import { PriceSource, TimeFrame } from '@/types';
-import { PRICE_SOURCES, SUPPORTED_PAIRS } from '@/config/sources';
+import { PRICE_SOURCES, SOURCE_GROUPS, findSource } from '@/config/sources';
+import SymbolInput from './SymbolInput';
 
 interface SourceSelectorProps {
   onConfigChange: (config: {
@@ -14,55 +15,88 @@ interface SourceSelectorProps {
   }) => void;
 }
 
+const timeframes: TimeFrame[] = ['1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
+
+function SourceSelect({
+  value,
+  onChange,
+  accent,
+}: {
+  value: PriceSource;
+  onChange: (s: PriceSource) => void;
+  accent: 'blue' | 'red';
+}) {
+  return (
+    <select
+      value={value.id}
+      onChange={(e) => {
+        const selected = findSource(e.target.value);
+        if (selected) onChange(selected);
+      }}
+      className={`w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-2 focus:ring-2 ${accent === 'blue' ? 'focus:ring-blue-500' : 'focus:ring-red-500'} focus:outline-none`}
+    >
+      {SOURCE_GROUPS.map((group) => (
+        <optgroup key={group} label={group}>
+          {PRICE_SOURCES.filter((s) => s.group === group).map((source) => (
+            <option key={source.id} value={source.id}>
+              {source.name}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
+
 export default function SourceSelector({ onConfigChange }: SourceSelectorProps) {
-  const [source1, setSource1] = useState<PriceSource>(PRICE_SOURCES[0]);
-  const [source2, setSource2] = useState<PriceSource>(PRICE_SOURCES[1]);
+  const [source1, setSource1] = useState<PriceSource>(findSource('binance-spot')!);
+  const [source2, setSource2] = useState<PriceSource>(findSource('binance-futures')!);
   const [symbol1, setSymbol1] = useState('BTCUSDT');
   const [symbol2, setSymbol2] = useState('BTCUSDT');
+  // Asset tickers of the chosen markets; source 2 follows the asset of source 1
+  const [base1, setBase1] = useState<string | undefined>('BTC');
+  const [base2, setBase2] = useState<string | undefined>('BTC');
   const [timeframe, setTimeframe] = useState<TimeFrame>('5m');
   const [limit, setLimit] = useState<number>(100);
-
-  const timeframes: TimeFrame[] = ['1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
-    const s1 = params.get('source1');
-    const s2 = params.get('source2');
+    const s1 = findSource(params.get('source1'));
+    const s2 = findSource(params.get('source2'));
     const sym1 = params.get('symbol1');
     const sym2 = params.get('symbol2');
     const tf = params.get('timeframe');
     const lim = params.get('limit');
 
-    if (s1) {
-      const found = PRICE_SOURCES.find(s => s.id === s1);
-      if (found) setSource1(found);
+    if (s1) setSource1(s1);
+    if (s2) setSource2(s2);
+    if (sym1 !== null) {
+      setSymbol1(sym1);
+      setBase1(undefined);
     }
-    if (s2) {
-      const found = PRICE_SOURCES.find(s => s.id === s2);
-      if (found) setSource2(found);
+    if (sym2 !== null) {
+      setSymbol2(sym2);
+      setBase2(undefined);
     }
-    if (sym1) setSymbol1(sym1);
-    if (sym2) setSymbol2(sym2);
     if (tf && timeframes.includes(tf as TimeFrame)) setTimeframe(tf as TimeFrame);
     if (lim && !isNaN(Number(lim))) setLimit(Number(lim));
   }, []);
 
-  const isDexSource = (source: PriceSource) => source.type === 'DEX';
-  const isContractDex = (source: PriceSource) => 
-    SUPPORTED_PAIRS[source.id]?.[0] === 'CONTRACT_ADDRESS';
-  const isCustomSymbol = (source: PriceSource) =>
-    SUPPORTED_PAIRS[source.id]?.[0] === 'CUSTOM_SYMBOL';
+  // Switching between symbol-based and contract-based sources invalidates the value;
+  // symbol -> symbol keeps it and SymbolInput re-matches the same asset on the new source.
+  const changeSource = (
+    next: PriceSource,
+    prev: PriceSource,
+    setSource: (s: PriceSource) => void,
+    setSymbol: (s: string) => void
+  ) => {
+    setSource(next);
+    if (next.inputKind !== prev.inputKind || next.inputKind === 'contract') setSymbol('');
+  };
 
   const handleAnalyze = () => {
-    onConfigChange({
-      source1,
-      source2,
-      symbol1,
-      symbol2,
-      timeframe,
-      limit,
-    });
+    onConfigChange({ source1, source2, symbol1, symbol2, timeframe, limit });
   };
 
   return (
@@ -71,139 +105,55 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Source 1 */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">
-            Source 1
-          </label>
-          <select
-            value={source1.id}
-            onChange={(e) => {
-              const selected = PRICE_SOURCES.find((s) => s.id === e.target.value);
-              if (selected) {
-                setSource1(selected);
-                const firstPair = SUPPORTED_PAIRS[selected.id]?.[0];
-                if (firstPair === 'CONTRACT_ADDRESS') {
-                  setSymbol1('');
-                } else if (firstPair === 'CUSTOM_SYMBOL') {
-                  setSymbol1('BTCUSDT');
-                } else {
-                  setSymbol1(firstPair || 'BTCUSDT');
-                }
-              }
-            }}
-            className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-          >
-            {PRICE_SOURCES.map((source) => (
-              <option key={source.id} value={source.id}>
-                {source.name} ({source.type})
-              </option>
-            ))}
-          </select>
-          {/* Symbol/Contract input for Source 1 */}
+          <label className="block text-sm font-medium text-gray-300 mb-2">Source 1</label>
+          <SourceSelect
+            value={source1}
+            accent="blue"
+            onChange={(s) => changeSource(s, source1, setSource1, setSymbol1)}
+          />
           <div className="mt-2">
             <label className="block text-xs text-gray-400 mb-1">
-              {isContractDex(source1) ? 'Contract Address' : isCustomSymbol(source1) ? 'Symbol' : 'Trading Pair'}
+              {source1.inputKind === 'contract' ? 'Token (tên / contract)' : 'Cặp giao dịch'}
             </label>
-            {isCustomSymbol(source1) ? (
-              <input
-                type="text"
-                value={symbol1}
-                onChange={(e) => setSymbol1(e.target.value)}
-                placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
-                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm"
-              />
-            ) : isContractDex(source1) ? (
-              <input
-                type="text"
-                value={symbol1}
-                onChange={(e) => setSymbol1(e.target.value)}
-                placeholder="0x..."
-                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none font-mono text-sm"
-              />
-            ) : (
-              <select
-                value={symbol1}
-                onChange={(e) => setSymbol1(e.target.value)}
-                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              >
-                {SUPPORTED_PAIRS[source1.id]?.map((pair) => (
-                  <option key={pair} value={pair}>
-                    {pair}
-                  </option>
-                ))}
-              </select>
-            )}
+            <SymbolInput
+              source={source1}
+              value={symbol1}
+              accent="blue"
+              preferredBase={base1}
+              onChange={(v, b) => {
+                setSymbol1(v);
+                if (b) setBase1(b.toUpperCase());
+              }}
+            />
           </div>
         </div>
         {/* Source 2 */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">
-            Source 2
-          </label>
-          <select
-            value={source2.id}
-            onChange={(e) => {
-              const selected = PRICE_SOURCES.find((s) => s.id === e.target.value);
-              if (selected) {
-                setSource2(selected);
-                const firstPair = SUPPORTED_PAIRS[selected.id]?.[0];
-                if (firstPair === 'CONTRACT_ADDRESS') {
-                  setSymbol2('');
-                } else if (firstPair === 'CUSTOM_SYMBOL') {
-                  setSymbol2('BTCUSDT');
-                } else {
-                  setSymbol2(firstPair || 'BTCUSDT');
-                }
-              }
-            }}
-            className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-red-500 focus:outline-none"
-          >
-            {PRICE_SOURCES.map((source) => (
-              <option key={source.id} value={source.id}>
-                {source.name} ({source.type})
-              </option>
-            ))}
-          </select>
-          {/* Symbol/Contract input for Source 2 */}
+          <label className="block text-sm font-medium text-gray-300 mb-2">Source 2</label>
+          <SourceSelect
+            value={source2}
+            accent="red"
+            onChange={(s) => changeSource(s, source2, setSource2, setSymbol2)}
+          />
           <div className="mt-2">
             <label className="block text-xs text-gray-400 mb-1">
-              {isContractDex(source2) ? 'Contract Address' : isCustomSymbol(source2) ? 'Symbol' : 'Trading Pair'}
+              {source2.inputKind === 'contract' ? 'Token (tên / contract)' : 'Cặp giao dịch'}
             </label>
-            {isCustomSymbol(source2) ? (
-              <input
-                type="text"
-                value={symbol2}
-                onChange={(e) => setSymbol2(e.target.value)}
-                placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
-                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-red-500 focus:outline-none text-sm"
-              />
-            ) : isContractDex(source2) ? (
-              <input
-                type="text"
-                value={symbol2}
-                onChange={(e) => setSymbol2(e.target.value)}
-                placeholder="0x..."
-                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-red-500 focus:outline-none font-mono text-sm"
-              />
-            ) : (
-              <select
-                value={symbol2}
-                onChange={(e) => setSymbol2(e.target.value)}
-                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-red-500 focus:outline-none"
-              >
-                {SUPPORTED_PAIRS[source2.id]?.map((pair) => (
-                  <option key={pair} value={pair}>
-                    {pair}
-                  </option>
-                ))}
-              </select>
-            )}
+            <SymbolInput
+              source={source2}
+              value={symbol2}
+              accent="red"
+              preferredBase={base1 ?? base2}
+              onChange={(v, b) => {
+                setSymbol2(v);
+                if (b) setBase2(b.toUpperCase());
+              }}
+            />
           </div>
         </div>
         {/* Timeframe */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">
-            Timeframe
-          </label>
+          <label className="block text-sm font-medium text-gray-300 mb-2">Timeframe</label>
           <select
             value={timeframe}
             onChange={(e) => setTimeframe(e.target.value as TimeFrame)}
@@ -218,9 +168,7 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
         </div>
         {/* Data Points Limit */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">
-            Data Points
-          </label>
+          <label className="block text-sm font-medium text-gray-300 mb-2">Data Points</label>
           <input
             type="number"
             value={limit}
@@ -246,15 +194,11 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="bg-gray-800/50 rounded p-2">
             <div className="text-gray-400 mb-1">Source 1:</div>
-            <div className="text-white font-mono break-all">
-              {symbol1 || 'Not set'}
-            </div>
+            <div className="text-white font-mono break-all">{symbol1 || 'Not set'}</div>
           </div>
           <div className="bg-gray-800/50 rounded p-2">
             <div className="text-gray-400 mb-1">Source 2:</div>
-            <div className="text-white font-mono break-all">
-              {symbol2 || 'Not set'}
-            </div>
+            <div className="text-white font-mono break-all">{symbol2 || 'Not set'}</div>
           </div>
         </div>
         <div className="flex items-center justify-between text-sm mt-2">
@@ -266,7 +210,8 @@ export default function SourceSelector({ onConfigChange }: SourceSelectorProps) 
       <div className="flex gap-2 mt-4">
         <button
           onClick={handleAnalyze}
-          className="flex-1 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 transform hover:scale-[1.02]"
+          disabled={!symbol1 || !symbol2}
+          className="flex-1 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-lg transition-all duration-200 transform hover:scale-[1.02]"
         >
           Analyze Spread
         </button>

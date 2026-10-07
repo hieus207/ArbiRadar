@@ -1,5 +1,17 @@
-import axios from 'axios';
-import { KlineData, PriceDataPoint, TimeFrame } from '@/types';
+import { PriceDataPoint, TimeFrame } from '@/types';
+import { DEX_CHAINS } from '@/config/sources';
+import { HttpError, httpGet, httpPost } from './http';
+
+export const TIMEFRAME_SECONDS: Record<TimeFrame, number> = {
+  '1m': 60,
+  '3m': 180,
+  '5m': 300,
+  '15m': 900,
+  '30m': 1800,
+  '1h': 3600,
+  '4h': 14400,
+  '1d': 86400,
+};
 
 // Base class for all price sources
 export abstract class PriceSourceAdapter {
@@ -8,616 +20,510 @@ export abstract class PriceSourceAdapter {
     timeframe: TimeFrame,
     limit?: number
   ): Promise<PriceDataPoint[]>;
-  
-  protected convertKlineToDataPoint(kline: KlineData): PriceDataPoint {
-    return {
-      time: Math.floor(kline.timestamp / 1000), // Convert to seconds
-      value: kline.close,
-    };
-  }
 }
 
-// Binance Spot Adapter
+// ---------- helpers ----------
+
+// Sort ascending, drop invalid and duplicate timestamps (required by lightweight-charts)
+function clean(points: PriceDataPoint[]): PriceDataPoint[] {
+  const map = new Map<number, number>();
+  for (const p of points) {
+    if (Number.isFinite(p.time) && Number.isFinite(p.value) && p.value > 0) map.set(p.time, p.value);
+  }
+  return [...map.entries()].sort((a, b) => a[0] - b[0]).map(([time, value]) => ({ time, value }));
+}
+
+// Build a coarser timeframe from finer candles: close of a bucket = close of its last candle
+function resample(points: PriceDataPoint[], tfSec: number): PriceDataPoint[] {
+  const map = new Map<number, number>();
+  for (const p of clean(points)) map.set(Math.floor(p.time / tfSec) * tfSec, p.value);
+  return [...map.entries()].map(([time, value]) => ({ time, value }));
+}
+
+const tail = (points: PriceDataPoint[], limit: number) => clean(points).slice(-limit);
+
+// Pick a native interval; if the exchange lacks it, fetch a finer one and resample.
+function planInterval(
+  timeframe: TimeFrame,
+  supported: Partial<Record<TimeFrame, string>>
+): { interval: string; factor: number; base: TimeFrame } {
+  if (supported[timeframe]) return { interval: supported[timeframe]!, factor: 1, base: timeframe };
+  const target = TIMEFRAME_SECONDS[timeframe];
+  const candidates = (Object.keys(supported) as TimeFrame[])
+    .filter((tf) => TIMEFRAME_SECONDS[tf] < target && target % TIMEFRAME_SECONDS[tf] === 0)
+    .sort((a, b) => TIMEFRAME_SECONDS[b] - TIMEFRAME_SECONDS[a]);
+  const base = candidates[0] || '1m';
+  return { interval: supported[base]!, factor: target / TIMEFRAME_SECONDS[base], base };
+}
+
+// Normalize user input like "btc/usdt", "BTC-USDT", "btcusdt" into parts
+function splitPair(symbol: string, quotes = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'USD', 'BTC', 'ETH']): [string, string] {
+  const s = symbol.toUpperCase().trim();
+  const parts = s.split(/[-_/]/).filter(Boolean);
+  if (parts.length >= 2) return [parts[0], parts[1]];
+  for (const q of quotes) {
+    if (s.endsWith(q) && s.length > q.length) return [s.slice(0, -q.length), q];
+  }
+  return [s, 'USDT'];
+}
+
+const ensureOk = <T>(cond: unknown, msg: string, value: T): T => {
+  if (!cond) throw new Error(msg);
+  return value;
+};
+
+// ---------- Binance ----------
+
 export class BinanceSpotAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://api.binance.com/api/v3';
+  protected url = 'https://api.binance.com/api/v3/klines';
 
-  async fetchKlineData(
-    symbol: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      // Binance format: BTCUSDT (no separator)
-      const binanceSymbol = symbol.replace('/', '').replace('-', '').toUpperCase();
-      const response = await axios.get(`${this.baseUrl}/klines`, {
-        params: {
-          symbol: binanceSymbol,
-          interval: timeframe,
-          limit,
-        },
-      });
-
-      return response.data.map((item: any) => ({
-        time: Math.floor(item[0] / 1000),
-        value: parseFloat(item[4]), // Close price
-      }));
-    } catch (error) {
-      console.error('Binance Spot API error:', error);
-      throw error;
-    }
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const data = await httpGet(this.url, {
+      symbol: splitPair(symbol).join(''),
+      interval: timeframe,
+      limit: Math.min(limit, 1000),
+    });
+    return tail(data.map((k: any) => ({ time: Math.floor(k[0] / 1000), value: parseFloat(k[4]) })), limit);
   }
 }
 
-// Binance Futures Adapter
-export class BinanceFuturesAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://fapi.binance.com/fapi/v1';
-
-  async fetchKlineData(
-    symbol: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      // Binance Futures format: BTCUSDT (no separator)
-      const binanceSymbol = symbol.replace('/', '').replace('-', '').toUpperCase();
-      const response = await axios.get(`${this.baseUrl}/klines`, {
-        params: {
-          symbol: binanceSymbol,
-          interval: timeframe,
-          limit,
-        },
-      });
-
-      return response.data.map((item: any) => ({
-        time: Math.floor(item[0] / 1000),
-        value: parseFloat(item[4]), // Close price
-      }));
-    } catch (error) {
-      console.error('Binance Futures API error:', error);
-      throw error;
-    }
-  }
+export class BinanceFuturesAdapter extends BinanceSpotAdapter {
+  protected url = 'https://fapi.binance.com/fapi/v1/klines';
 }
 
-// Deprecated: Use BinanceSpotAdapter instead
-export class BinanceAdapter extends BinanceSpotAdapter {
-}
+// ---------- OKX ----------
 
-// OKX CEX Adapter
+const OKX_BARS: Partial<Record<TimeFrame, string>> = {
+  '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1H', '4h': '4H', '1d': '1Dutc',
+};
+
 export class OKXAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://www.okx.com/api/v5';
-
-  async fetchKlineData(
-    symbol: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      // OKX format: BTC-USDT (dash separator)
-      // Convert BTCUSDT -> BTC-USDT or keep BTC-USDT as is
-      let okxSymbol = symbol;
-      if (!symbol.includes('-')) {
-        // BTCUSDT -> BTC-USDT, ETHUSDT -> ETH-USDT
-        if (symbol.endsWith('USDT')) {
-          okxSymbol = symbol.slice(0, -4) + '-USDT';
-        } else if (symbol.endsWith('BUSD')) {
-          okxSymbol = symbol.slice(0, -4) + '-BUSD';
-        } else if (symbol.endsWith('USD')) {
-          okxSymbol = symbol.slice(0, -3) + '-USD';
-        }
-      }
-      
-      console.log('OKX fetching:', okxSymbol, timeframe);
-      
-      // OKX bar format: 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 1D
-      const okxBar = timeframe.toLowerCase();
-      
-      const response = await axios.get(`${this.baseUrl}/market/candles`, {
-        params: {
-          instId: okxSymbol,
-          bar: okxBar,
-          limit,
-        },
-      });
-
-      console.log('OKX response:', response.data);
-      
-      if (!response.data.data || response.data.data.length === 0) {
-        console.error('OKX returned no data');
-        return [];
-      }
-
-      return response.data.data.map((item: any) => ({
-        time: Math.floor(parseInt(item[0]) / 1000),
-        value: parseFloat(item[4]), // Close price
-      })).reverse();
-    } catch (error) {
-      console.error('OKX API error:', error);
-      throw error;
-    }
-  }
-}
-
-// Bybit Spot Adapter
-export class BybitSpotAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://api.bybit.com/v5';
-
-  // Convert timeframe to Bybit interval format
-  private convertTimeframe(timeframe: TimeFrame): string {
-    const intervalMap: Record<TimeFrame, string> = {
-      '1m': '1',
-      '3m': '3',
-      '5m': '5',
-      '15m': '15',
-      '30m': '30',
-      '1h': '60',
-      '4h': '240',
-      '1d': 'D',
-    };
-    return intervalMap[timeframe] || '1';
-  }
-
-  async fetchKlineData(
-    symbol: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      const bybitSymbol = symbol.replace('/', '').replace('-', '').toUpperCase();
-      const interval = this.convertTimeframe(timeframe);
-      
-      console.log(`Bybit Spot fetching: ${bybitSymbol}, interval: ${interval}`);
-
-      const response = await axios.get(`${this.baseUrl}/market/kline`, {
-        params: {
-          category: 'spot',
-          symbol: bybitSymbol,
-          interval,
-          limit,
-        },
-      });
-
-      console.log('Bybit Spot response:', response.data);
-
-      if (!response.data || response.data.retCode !== 0) {
-        console.error('Bybit Spot API error:', response.data?.retMsg);
-        return [];
-      }
-
-      if (!response.data.result?.list || response.data.result.list.length === 0) {
-        console.error('Bybit Spot returned no data');
-        return [];
-      }
-
-      return response.data.result.list.map((item: any) => ({
-        time: Math.floor(parseInt(item[0]) / 1000),
-        value: parseFloat(item[4]), // Close price
-      })).reverse();
-    } catch (error) {
-      console.error('Bybit Spot API error:', error);
-      return [];
-    }
-  }
-}
-
-// Bybit Futures Adapter
-export class BybitFuturesAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://api.bybit.com/v5';
-
-  // Convert timeframe to Bybit interval format
-  private convertTimeframe(timeframe: TimeFrame): string {
-    const intervalMap: Record<TimeFrame, string> = {
-      '1m': '1',
-      '3m': '3',
-      '5m': '5',
-      '15m': '15',
-      '30m': '30',
-      '1h': '60',
-      '4h': '240',
-      '1d': 'D',
-    };
-    return intervalMap[timeframe] || '1';
-  }
-
-  async fetchKlineData(
-    symbol: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      const bybitSymbol = symbol.replace('/', '').replace('-', '').toUpperCase();
-      const interval = this.convertTimeframe(timeframe);
-      
-      console.log(`Bybit Futures fetching: ${bybitSymbol}, interval: ${interval}`);
-
-      const response = await axios.get(`${this.baseUrl}/market/kline`, {
-        params: {
-          category: 'linear', // USDT perpetual
-          symbol: bybitSymbol,
-          interval,
-          limit,
-        },
-      });
-
-      console.log('Bybit Futures response:', response.data);
-
-      if (!response.data || response.data.retCode !== 0) {
-        console.error('Bybit Futures API error:', response.data?.retMsg);
-        return [];
-      }
-
-      if (!response.data.result?.list || response.data.result.list.length === 0) {
-        console.error('Bybit Futures returned no data');
-        return [];
-      }
-
-      return response.data.result.list.map((item: any) => ({
-        time: Math.floor(parseInt(item[0]) / 1000),
-        value: parseFloat(item[4]), // Close price
-      })).reverse();
-    } catch (error) {
-      console.error('Bybit Futures API error:', error);
-      return [];
-    }
-  }
-}
-
-// Deprecated: Use BybitSpotAdapter instead
-export class BybitAdapter extends BybitSpotAdapter {
-}
-
-// OKX DEX Adapter (supports multiple chains)
-export class OKXDexAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://www.okx.com/api/v5/dex/aggregator';
-
-  constructor(private chainId: string) {
+  constructor(private swap = false) {
     super();
   }
 
-  async fetchKlineData(
-    contractAddress: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      // OKX DEX timeframe: 1m, 5m, 15m, 30m, 1H, 4H, 1D
-      const bar = timeframe.toLowerCase();
-      
-      console.log(`OKX DEX fetching: chain ${this.chainId}, token ${contractAddress}, bar ${bar}`);
-
-      // Get candle/kline data
-      const response = await axios.get(`${this.baseUrl}/candlesticks`, {
-        params: {
-          chainId: this.chainId,
-          tokenContractAddress: contractAddress,
-          bar,
-          limit,
-        },
-      });
-
-      console.log('OKX DEX response:', response.data);
-
-      if (!response.data.data || response.data.data.length === 0) {
-        console.error('OKX DEX returned no data');
-        return [];
-      }
-
-      return response.data.data.map((item: any) => ({
-        time: Math.floor(parseInt(item[0]) / 1000), // Convert ms to seconds
-        value: parseFloat(item[4]), // Close price
-      })).reverse();
-    } catch (error) {
-      console.error('OKX DEX API error:', error);
-      return [];
+  private instId(symbol: string): string {
+    const s = symbol.toUpperCase().trim();
+    if (this.swap) {
+      if (s.endsWith('-SWAP')) return s;
+      return splitPair(s).join('-') + '-SWAP';
     }
+    return splitPair(s).join('-');
+  }
+
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const instId = this.instId(symbol);
+    const out: PriceDataPoint[] = [];
+    let after: string | undefined;
+    // OKX returns max 300 candles per call (newest first) -> paginate backwards
+    while (out.length < limit) {
+      const res = await httpGet('https://www.okx.com/api/v5/market/candles', {
+        instId,
+        bar: OKX_BARS[timeframe],
+        limit: Math.min(300, limit - out.length),
+        after,
+      });
+      ensureOk(res.code === '0', `OKX: ${res.msg}`, null);
+      if (!res.data?.length) break;
+      out.push(...res.data.map((k: any) => ({ time: Math.floor(+k[0] / 1000), value: parseFloat(k[4]) })));
+      after = res.data[res.data.length - 1][0];
+      if (res.data.length < 300) break;
+    }
+    return tail(out, limit);
   }
 }
 
-// Lighter Perpetual DEX Adapter
-export class LighterAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://mainnet.zklighter.elliot.ai/api/v1';
-  private explorerUrl = 'https://explorer.elliot.ai/api';
+// ---------- Bybit ----------
 
-  // Lookup market_id from symbol
-  private async getMarketId(symbol: string): Promise<number | null> {
-    try {
-      console.log(`Lighter looking up market_id for symbol: ${symbol}`);
-      
-      const response = await axios.get(`${this.explorerUrl}/markets`);
-      
-      if (!response.data || !Array.isArray(response.data)) {
-        console.error('Lighter markets API returned invalid data');
-        return null;
-      }
+const BYBIT_INTERVALS: Record<TimeFrame, string> = {
+  '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1d': 'D',
+};
 
-      console.log('Available markets sample:', response.data.slice(0, 5).map((m: any) => `${m.symbol} (${m.market_index})`).join(', '));
-
-      // Find market by symbol
-      const market = response.data.find((m: any) => 
-        m.symbol.toUpperCase() === symbol.toUpperCase()
-      );
-
-      if (!market) {
-        console.error(`Market not found for symbol: ${symbol}`);
-        console.error(`Available symbols: ${response.data.slice(0, 10).map((m: any) => m.symbol).join(', ')}...`);
-        return null;
-      }
-
-      console.log(`Found market_id ${market.market_index} for ${symbol}`);
-      return market.market_index;
-    } catch (error) {
-      console.error('Lighter market lookup error:', error);
-      return null;
-    }
-  }
-
-  async fetchKlineData(
-    symbol: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      const marketId = await this.getMarketId(symbol);
-      if (marketId === null) {
-        return [];
-      }
-
-      const resolution = timeframe;
-      const endTimestamp = Date.now();
-      const timeframeMs: Record<TimeFrame, number> = {
-        '1m': 60 * 1000,
-        '3m': 3 * 60 * 1000,
-        '5m': 5 * 60 * 1000,
-        '15m': 15 * 60 * 1000,
-        '30m': 30 * 60 * 1000,
-        '1h': 60 * 60 * 1000,
-        '4h': 4 * 60 * 60 * 1000,
-        '1d': 24 * 60 * 60 * 1000,
-      };
-      const startTimestamp = endTimestamp - (limit * timeframeMs[timeframe]);
-
-      console.log(`Lighter fetching: market_id ${marketId}, resolution ${resolution}`);
-
-      const response = await axios.get(`${this.baseUrl}/candles`, {
-        params: {
-          market_id: marketId,
-          resolution,
-          start_timestamp: startTimestamp,
-          end_timestamp: endTimestamp,
-          count_back: limit,
-        },
-      });
-
-      console.log('Lighter response:', response.data);
-
-      if (!response.data || !response.data.c) {
-        console.error('Lighter returned no data');
-        return [];
-      }
-
-      const candles = response.data.c;
-      
-      if (candles.length === 0) {
-        console.error('Lighter returned empty candles array');
-        return [];
-      }
-
-      console.log('Lighter candles count:', candles.length);
-
-      const data = candles.map((item: any) => ({
-        time: Math.floor(item.t / 1000),
-        value: parseFloat(item.c),
-      }));
-
-      return data.sort((a: any, b: any) => a.time - b.time);
-    } catch (error) {
-      console.error('Lighter API error:', error);
-      return [];
-    }
-  }
-}
-
-// Deprecated aliases
-export class LighterDexAdapter extends LighterAdapter {}
-export class LighterSpotAdapter extends LighterAdapter {}
-export class LighterFuturesAdapter extends LighterAdapter {}
-
-// GeckoTerminal DEX Adapter (fallback option)
-export class GeckoTerminalAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://api.geckoterminal.com/api/v2';
-
-  constructor(private chain: string) {
+export class BybitAdapter extends PriceSourceAdapter {
+  constructor(private category: 'spot' | 'linear') {
     super();
   }
 
-  async fetchKlineData(
-    contractAddress: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      // GeckoTerminal timeframe mapping: minute, hour, day
-      const timeframeMap: Record<TimeFrame, string> = {
-        '1m': 'minute',
-        '3m': 'minute',
-        '5m': 'minute',
-        '15m': 'minute',
-        '30m': 'minute',
-        '1h': 'hour',
-        '4h': 'hour',
-        '1d': 'day',
-      };
-
-      const aggregate = timeframeMap[timeframe];
-      
-      // First, find the pool address for this token
-      const poolsResponse = await axios.get(
-        `${this.baseUrl}/networks/${this.chain}/tokens/${contractAddress}/pools`,
-        { params: { page: 1 } }
-      );
-
-      if (!poolsResponse.data.data || poolsResponse.data.data.length === 0) {
-        console.error('No pools found for token');
-        return [];
-      }
-
-      // Get the most liquid pool
-      const pool = poolsResponse.data.data[0];
-      const poolAddress = pool.attributes.address;
-
-      console.log(`GeckoTerminal fetching: ${this.chain}, pool: ${poolAddress}, timeframe: ${aggregate}`);
-
-      // Fetch OHLCV data
-      const ohlcvResponse = await axios.get(
-        `${this.baseUrl}/networks/${this.chain}/pools/${poolAddress}/ohlcv/${aggregate}`,
-        { params: { limit, currency: 'usd' } }
-      );
-
-      if (!ohlcvResponse.data.data.attributes.ohlcv_list) {
-        return [];
-      }
-
-      const data = ohlcvResponse.data.data.attributes.ohlcv_list.map((item: any) => ({
-        time: item[0], // Unix timestamp in seconds
-        value: parseFloat(item[4]), // Close price
-      }));
-
-      // Sort by time ascending (required by lightweight-charts)
-      return data.sort((a: any, b: any) => a.time - b.time);
-    } catch (error) {
-      console.error('GeckoTerminal API error:', error);
-      return [];
-    }
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const res = await httpGet('https://api.bybit.com/v5/market/kline', {
+      category: this.category,
+      symbol: splitPair(symbol).join(''),
+      interval: BYBIT_INTERVALS[timeframe],
+      limit: Math.min(limit, 1000),
+    });
+    ensureOk(res.retCode === 0, `Bybit: ${res.retMsg}`, null);
+    return tail(res.result.list.map((k: any) => ({ time: Math.floor(+k[0] / 1000), value: parseFloat(k[4]) })), limit);
   }
 }
 
-// Hyperliquid Perpetual DEX Adapter
+// ---------- KuCoin ----------
+
+const KUCOIN_SPOT_TYPES: Partial<Record<TimeFrame, string>> = {
+  '1m': '1min', '3m': '3min', '5m': '5min', '15m': '15min', '30m': '30min', '1h': '1hour', '4h': '4hour', '1d': '1day',
+};
+
+export class KuCoinSpotAdapter extends PriceSourceAdapter {
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const endAt = Math.floor(Date.now() / 1000);
+    const startAt = endAt - (limit + 1) * TIMEFRAME_SECONDS[timeframe];
+    const res = await httpGet('https://api.kucoin.com/api/v1/market/candles', {
+      type: KUCOIN_SPOT_TYPES[timeframe],
+      symbol: splitPair(symbol).join('-'),
+      startAt,
+      endAt,
+    });
+    ensureOk(res.code === '200000', `KuCoin: ${res.msg}`, null);
+    // [time(s), open, close, high, low, volume, turnover]
+    return tail(res.data.map((k: any) => ({ time: +k[0], value: parseFloat(k[2]) })), limit);
+  }
+}
+
+const KUCOIN_FUT_GRAN: Partial<Record<TimeFrame, string>> = {
+  '1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1d': '1440',
+};
+
+export class KuCoinFuturesAdapter extends PriceSourceAdapter {
+  private contract(symbol: string): string {
+    const s = symbol.toUpperCase().trim();
+    if (/USDTM$|USDCM$|USDM$/.test(s)) return s;
+    const [base, quote] = splitPair(s);
+    return (base === 'BTC' ? 'XBT' : base) + quote + 'M';
+  }
+
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const plan = planInterval(timeframe, KUCOIN_FUT_GRAN);
+    const stepMs = TIMEFRAME_SECONDS[plan.base] * 1000;
+    const need = limit * plan.factor;
+    const contract = this.contract(symbol);
+    const out: PriceDataPoint[] = [];
+    let to = Date.now();
+    // Max 500 candles per call -> walk backwards in windows
+    for (let fetched = 0; fetched < need; fetched += 500) {
+      const count = Math.min(500, need - fetched);
+      const from = to - count * stepMs;
+      const res = await httpGet('https://api-futures.kucoin.com/api/v1/kline/query', {
+        symbol: contract,
+        granularity: plan.interval,
+        from,
+        to,
+      });
+      ensureOk(res.code === '200000', `KuCoin Futures: ${res.msg}`, null);
+      if (!res.data?.length) break;
+      out.push(...res.data.map((k: any) => ({ time: Math.floor(k[0] / 1000), value: +k[4] })));
+      to = from;
+    }
+    const points = plan.factor > 1 ? resample(out, TIMEFRAME_SECONDS[timeframe]) : out;
+    return tail(points, limit);
+  }
+}
+
+// ---------- Gate ----------
+
+const GATE_INTERVALS: Partial<Record<TimeFrame, string>> = {
+  '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d',
+};
+
+export class GateAdapter extends PriceSourceAdapter {
+  constructor(private futures: boolean) {
+    super();
+  }
+
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const plan = planInterval(timeframe, GATE_INTERVALS);
+    const pair = splitPair(symbol).join('_');
+    const count = Math.min(limit * plan.factor, 1000);
+    let points: PriceDataPoint[];
+    if (this.futures) {
+      const data = await httpGet('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
+        contract: pair,
+        interval: plan.interval,
+        limit: count,
+      });
+      points = data.map((k: any) => ({ time: +k.t, value: parseFloat(k.c) }));
+    } else {
+      const data = await httpGet('https://api.gateio.ws/api/v4/spot/candlesticks', {
+        currency_pair: pair,
+        interval: plan.interval,
+        limit: count,
+      });
+      // [time(s), quote vol, close, high, low, open, base vol, finished]
+      points = data.map((k: any) => ({ time: +k[0], value: parseFloat(k[2]) }));
+    }
+    if (plan.factor > 1) points = resample(points, TIMEFRAME_SECONDS[timeframe]);
+    return tail(points, limit);
+  }
+}
+
+// ---------- Bitget ----------
+
+const BITGET_SPOT_GRAN: Record<TimeFrame, string> = {
+  '1m': '1min', '3m': '3min', '5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h', '4h': '4h', '1d': '1Dutc',
+};
+const BITGET_MIX_GRAN: Record<TimeFrame, string> = {
+  '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1H', '4h': '4H', '1d': '1Dutc',
+};
+
+export class BitgetAdapter extends PriceSourceAdapter {
+  constructor(private futures: boolean) {
+    super();
+  }
+
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const sym = splitPair(symbol).join('');
+    const res = this.futures
+      ? await httpGet('https://api.bitget.com/api/v2/mix/market/candles', {
+          symbol: sym,
+          productType: 'USDT-FUTURES',
+          granularity: BITGET_MIX_GRAN[timeframe],
+          limit: Math.min(limit, 1000),
+        })
+      : await httpGet('https://api.bitget.com/api/v2/spot/market/candles', {
+          symbol: sym,
+          granularity: BITGET_SPOT_GRAN[timeframe],
+          limit: Math.min(limit, 1000),
+        });
+    ensureOk(res.code === '00000', `Bitget: ${res.msg}`, null);
+    return tail(res.data.map((k: any) => ({ time: Math.floor(+k[0] / 1000), value: parseFloat(k[4]) })), limit);
+  }
+}
+
+// ---------- Hyperliquid ----------
+
+const HL_INFO = 'https://api.hyperliquid.xyz/info';
+let hlSpotNames: Promise<Map<string, string>> | null = null;
+
+// "HYPE/USDC" -> "@107" (the coin id candleSnapshot expects for non-canonical spot pairs)
+function hyperliquidSpotNames(): Promise<Map<string, string>> {
+  if (!hlSpotNames) {
+    hlSpotNames = httpPost(HL_INFO, { type: 'spotMeta' }).then((meta) => {
+      const tokenName = new Map<number, string>(meta.tokens.map((t: any) => [t.index, t.name]));
+      const map = new Map<string, string>();
+      for (const u of meta.universe) {
+        const pretty = `${tokenName.get(u.tokens[0])}/${tokenName.get(u.tokens[1])}`.toUpperCase();
+        if (!map.has(pretty)) map.set(pretty, u.name);
+      }
+      return map;
+    });
+    hlSpotNames.catch(() => (hlSpotNames = null));
+  }
+  return hlSpotNames;
+}
+
 export class HyperliquidAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://api.hyperliquid.xyz/info';
+  constructor(private spot = false) {
+    super();
+  }
 
-  async fetchKlineData(
-    symbol: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      // Hyperliquid interval format: 1m, 5m, 15m, 1h, 4h, 1d
-      const interval = timeframe;
-      
-      // Calculate time range
-      const endTime = Date.now();
-      const timeframeMs: Record<TimeFrame, number> = {
-        '1m': 60 * 1000,
-        '3m': 3 * 60 * 1000,
-        '5m': 5 * 60 * 1000,
-        '15m': 15 * 60 * 1000,
-        '30m': 30 * 60 * 1000,
-        '1h': 60 * 60 * 1000,
-        '4h': 4 * 60 * 60 * 1000,
-        '1d': 24 * 60 * 60 * 1000,
-      };
-      const startTime = endTime - (limit * timeframeMs[timeframe]);
-
-      console.log(`Hyperliquid fetching: ${symbol}, interval: ${interval}`);
-
-      const response = await axios.post(this.baseUrl, {
-        type: 'candleSnapshot',
-        req: {
-          coin: symbol,
-          interval,
-          startTime,
-          endTime,
-        },
-      });
-
-      console.log('Hyperliquid response:', response.data);
-
-      if (!response.data || !Array.isArray(response.data)) {
-        console.error('Hyperliquid returned no data');
-        return [];
+  private async coin(symbol: string): Promise<string> {
+    const s = symbol.trim();
+    if (!this.spot) {
+      // Perp: "BTC", HIP-3: "xyz:TSLA" (dex prefix is lowercase)
+      if (s.includes(':')) {
+        const [dex, name] = s.split(':');
+        return `${dex.toLowerCase()}:${name.toUpperCase()}`;
       }
-
-      const data = response.data.map((item: any) => ({
-        time: Math.floor(item.t / 1000), // Convert ms to seconds
-        value: parseFloat(item.c), // Close price
-      }));
-
-      return data.sort((a: any, b: any) => a.time - b.time);
-    } catch (error) {
-      console.error('Hyperliquid API error:', error);
-      return [];
+      return splitPair(s, ['USDT', 'USDC', 'USD'])[0];
     }
+    if (s.startsWith('@')) return s;
+    const names = await hyperliquidSpotNames();
+    const key = s.includes('/') ? s.toUpperCase() : `${s.toUpperCase()}/USDC`;
+    const coin = names.get(key);
+    if (!coin) throw new Error(`Hyperliquid spot: unknown pair ${symbol}`);
+    return coin;
+  }
+
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const endTime = Date.now();
+    const startTime = endTime - (limit + 1) * TIMEFRAME_SECONDS[timeframe] * 1000;
+    const data = await httpPost(HL_INFO, {
+      type: 'candleSnapshot',
+      req: { coin: await this.coin(symbol), interval: timeframe, startTime, endTime },
+    });
+    if (!Array.isArray(data)) return [];
+    return tail(data.map((k: any) => ({ time: Math.floor(k.t / 1000), value: parseFloat(k.c) })), limit);
   }
 }
 
-// Deprecated aliases
-export class HyperliquidSpotAdapter extends HyperliquidAdapter {}
-export class HyperliquidFuturesAdapter extends HyperliquidAdapter {}
+// ---------- Lighter ----------
 
-// Aster DEX Perpetual Adapter
+const LIGHTER_API = 'https://mainnet.zklighter.elliot.ai/api/v1';
+let lighterBooks: Promise<any[]> | null = null;
+
+function lighterOrderBooks(): Promise<any[]> {
+  if (!lighterBooks) {
+    lighterBooks = httpGet(`${LIGHTER_API}/orderBooks`).then((r) => r.order_books || []);
+    lighterBooks.catch(() => (lighterBooks = null));
+  }
+  return lighterBooks;
+}
+
+const LIGHTER_RES: Partial<Record<TimeFrame, string>> = {
+  '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d',
+};
+
+export class LighterAdapter extends PriceSourceAdapter {
+  constructor(private spot = false) {
+    super();
+  }
+
+  private async marketId(symbol: string): Promise<number> {
+    const books = await lighterOrderBooks();
+    const type = this.spot ? 'spot' : 'perp';
+    let s = symbol.trim().toUpperCase();
+    if (this.spot && !s.includes('/')) s += '/USDC';
+    if (!this.spot) s = splitPair(s, ['USDT', 'USDC', 'USD'])[0];
+    const book = books.find((b) => b.market_type === type && String(b.symbol).toUpperCase() === s);
+    if (!book) throw new Error(`Lighter: market not found ${symbol}`);
+    return book.market_id;
+  }
+
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const plan = planInterval(timeframe, LIGHTER_RES);
+    const count = limit * plan.factor;
+    const end = Date.now();
+    const start = end - (count + 1) * TIMEFRAME_SECONDS[plan.base] * 1000;
+    const res = await httpGet(`${LIGHTER_API}/candles`, {
+      market_id: await this.marketId(symbol),
+      resolution: plan.interval,
+      start_timestamp: start,
+      end_timestamp: end,
+      count_back: count,
+    });
+    ensureOk(res.code === 200, `Lighter: ${res.message}`, null);
+    let points: PriceDataPoint[] = (res.c || []).map((k: any) => ({ time: Math.floor(k.t / 1000), value: +k.c }));
+    if (plan.factor > 1) points = resample(points, TIMEFRAME_SECONDS[timeframe]);
+    return tail(points, limit);
+  }
+}
+
+// ---------- Aster ----------
+
 export class AsterAdapter extends PriceSourceAdapter {
-  private baseUrl = 'https://www.asterdex.com/fapi/v1';
+  constructor(private spot = false) {
+    super();
+  }
 
-  async fetchKlineData(
-    symbol: string,
-    timeframe: TimeFrame,
-    limit = 100
-  ): Promise<PriceDataPoint[]> {
-    try {
-      // Aster uses same interval format as Binance
-      const interval = timeframe;
-      
-      // Calculate time range (milliseconds)
-      const endTime = Date.now();
-      const timeframeMs: Record<TimeFrame, number> = {
-        '1m': 60 * 1000,
-        '3m': 3 * 60 * 1000,
-        '5m': 5 * 60 * 1000,
-        '15m': 15 * 60 * 1000,
-        '30m': 30 * 60 * 1000,
-        '1h': 60 * 60 * 1000,
-        '4h': 4 * 60 * 60 * 1000,
-        '1d': 24 * 60 * 60 * 1000,
-      };
-      const startTime = endTime - (limit * timeframeMs[timeframe]);
-
-      console.log(`Aster DEX fetching: ${symbol}, interval: ${interval}`);
-
-      const response = await axios.get(`${this.baseUrl}/klines`, {
-        params: {
-          symbol,
-          interval,
-          contractType: 'PERPETUAL',
-          startTime,
-          endTime,
-          limit,
-        },
-      });
-
-      console.log('Aster DEX response:', response.data);
-
-      if (!response.data || !Array.isArray(response.data)) {
-        console.error('Aster DEX returned no data');
-        return [];
-      }
-
-      // Binance-style response format: [openTime, open, high, low, close, ...]
-      const data = response.data.map((item: any) => ({
-        time: Math.floor(parseInt(item[0]) / 1000), // Convert ms to seconds
-        value: parseFloat(item[4]), // Close price
-      }));
-
-      return data.sort((a: any, b: any) => a.time - b.time);
-    } catch (error) {
-      console.error('Aster DEX API error:', error);
-      return [];
-    }
+  async fetchKlineData(symbol: string, timeframe: TimeFrame, limit = 100) {
+    const url = this.spot ? 'https://sapi.asterdex.com/api/v1/klines' : 'https://fapi.asterdex.com/fapi/v1/klines';
+    const data = await httpGet(url, {
+      symbol: splitPair(symbol).join(''),
+      interval: timeframe,
+      limit: Math.min(limit, 1000),
+    });
+    return tail(data.map((k: any) => ({ time: Math.floor(k[0] / 1000), value: parseFloat(k[4]) })), limit);
   }
 }
 
-// Factory to get the right adapter
+// ---------- On-chain DEX (GeckoTerminal) ----------
+
+const GECKO = 'https://api.geckoterminal.com/api/v2';
+const GECKO_TF: Partial<Record<TimeFrame, [string, number]>> = {
+  '1m': ['minute', 1], '5m': ['minute', 5], '15m': ['minute', 15],
+  '1h': ['hour', 1], '4h': ['hour', 4], '1d': ['day', 1],
+};
+// token address -> top pool address (cached; GeckoTerminal is rate limited to ~30 req/min)
+type PoolRef = { pool: string; token?: string; fromDexScreener?: boolean };
+const geckoPoolCache = new Map<string, Promise<PoolRef>>();
+
+export class GeckoTerminalAdapter extends PriceSourceAdapter {
+  constructor(private network: string, private dexscreenerChain?: string) {
+    super();
+  }
+
+  private resolvePool(address: string, skipDexScreener = false): Promise<PoolRef> {
+    const key = `${this.network}:${address.toLowerCase()}`;
+    let p = skipDexScreener ? undefined : geckoPoolCache.get(key);
+    if (!p) {
+      p = (async (): Promise<PoolRef> => {
+        // 1) DexScreener (generous rate limit): most liquid pair of the token
+        if (this.dexscreenerChain && !skipDexScreener) {
+          try {
+            const pairs = await httpGet(
+              `https://api.dexscreener.com/token-pairs/v1/${this.dexscreenerChain}/${encodeURIComponent(address)}`
+            );
+            const best = (Array.isArray(pairs) ? pairs : [])
+              .filter((x: any) => x.chainId === this.dexscreenerChain)
+              .sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
+            if (best?.pairAddress) {
+              const isBase = String(best.baseToken?.address).toLowerCase() === address.toLowerCase();
+              const isQuote = String(best.quoteToken?.address).toLowerCase() === address.toLowerCase();
+              if (isBase || isQuote) return { pool: best.pairAddress, token: address, fromDexScreener: true };
+            }
+          } catch {
+            // fall through to GeckoTerminal
+          }
+        }
+        // 2) GeckoTerminal token -> pools
+        try {
+          const res = await httpGet(`${GECKO}/networks/${this.network}/tokens/${encodeURIComponent(address)}/pools`, { page: 1 });
+          const pool = res.data?.[0]?.attributes?.address;
+          if (pool) return { pool, token: address };
+        } catch (err) {
+          if (err instanceof HttpError && err.status === 429) throw err;
+          // not a token address -> try as pool address
+        }
+        // 3) The input itself is a pool address
+        try {
+          await httpGet(`${GECKO}/networks/${this.network}/pools/${encodeURIComponent(address)}`);
+        } catch (err) {
+          if (err instanceof HttpError && err.status === 404) {
+            throw new Error('GeckoTerminal chưa có dữ liệu nến cho token/pool này');
+          }
+          throw err;
+        }
+        return { pool: address };
+      })();
+      geckoPoolCache.set(key, p);
+      p.catch(() => geckoPoolCache.delete(key));
+    }
+    return p;
+  }
+
+  async fetchKlineData(address: string, timeframe: TimeFrame, limit = 100) {
+    const addr = address.trim();
+    if (!addr) throw new Error('Missing token address');
+    let ref = await this.resolvePool(addr);
+
+    let factor = 1;
+    let tf = GECKO_TF[timeframe];
+    if (!tf) {
+      // 3m -> 1m, 30m -> 15m, then resample
+      const plan = planInterval(timeframe, { '1m': '1m', '15m': '15m' });
+      tf = GECKO_TF[plan.base]!;
+      factor = plan.factor;
+    }
+    const ohlcv = (r: PoolRef) =>
+      httpGet(`${GECKO}/networks/${this.network}/pools/${encodeURIComponent(r.pool)}/ohlcv/${tf![0]}`, {
+        aggregate: tf![1],
+        limit: Math.min(limit * factor, 1000),
+        currency: 'usd',
+        token: r.token, // price of the selected token, even if it is the quote side of the pool
+      });
+    let res;
+    try {
+      res = await ohlcv(ref);
+    } catch (err) {
+      // Pool picked by DexScreener unknown to GeckoTerminal -> use GeckoTerminal's own pool
+      if (!(err instanceof HttpError && err.status === 404 && ref.fromDexScreener)) throw err;
+      ref = await this.resolvePool(addr, true);
+      res = await ohlcv(ref);
+    }
+    let points: PriceDataPoint[] = (res.data?.attributes?.ohlcv_list || []).map((k: any) => ({
+      time: k[0],
+      value: parseFloat(k[4]),
+    }));
+    if (factor > 1) points = resample(points, TIMEFRAME_SECONDS[timeframe]);
+    return tail(points, limit);
+  }
+}
+
+// ---------- Factory ----------
+
 export class PriceSourceFactory {
   static getAdapter(sourceId: string): PriceSourceAdapter {
+    const chain = DEX_CHAINS[sourceId];
+    if (chain) return new GeckoTerminalAdapter(chain.gecko, chain.dexscreener);
+
     switch (sourceId) {
       case 'binance':
       case 'binance-spot':
@@ -625,34 +531,41 @@ export class PriceSourceFactory {
       case 'binance-futures':
         return new BinanceFuturesAdapter();
       case 'okx':
-        return new OKXAdapter();
+      case 'okx-spot':
+        return new OKXAdapter(false);
+      case 'okx-futures':
+        return new OKXAdapter(true);
       case 'bybit-spot':
-        return new BybitSpotAdapter();
+        return new BybitAdapter('spot');
       case 'bybit-futures':
-        return new BybitFuturesAdapter();
-      case 'dex-ethereum':
-        return new GeckoTerminalAdapter('eth');
-      case 'dex-bsc':
-        return new GeckoTerminalAdapter('bsc');
-      case 'dex-arbitrum':
-        return new GeckoTerminalAdapter('arbitrum');
-      case 'dex-polygon':
-        return new GeckoTerminalAdapter('polygon_pos');
-      case 'dex-base':
-        return new GeckoTerminalAdapter('base');
-      case 'dex-solana':
-        return new GeckoTerminalAdapter('solana');
-      case 'lighter-dex':
-      case 'lighter-spot':
-      case 'lighter-futures':
-      case 'lighter':
-        return new LighterAdapter();
-      case 'hyperliquid-spot':
-      case 'hyperliquid-futures':
+        return new BybitAdapter('linear');
+      case 'kucoin-spot':
+        return new KuCoinSpotAdapter();
+      case 'kucoin-futures':
+        return new KuCoinFuturesAdapter();
+      case 'gate-spot':
+        return new GateAdapter(false);
+      case 'gate-futures':
+        return new GateAdapter(true);
+      case 'bitget-spot':
+        return new BitgetAdapter(false);
+      case 'bitget-futures':
+        return new BitgetAdapter(true);
       case 'hyperliquid':
-        return new HyperliquidAdapter();
+      case 'hyperliquid-futures':
+        return new HyperliquidAdapter(false);
+      case 'hyperliquid-spot':
+        return new HyperliquidAdapter(true);
+      case 'lighter':
+      case 'lighter-dex':
+      case 'lighter-futures':
+        return new LighterAdapter(false);
+      case 'lighter-spot':
+        return new LighterAdapter(true);
       case 'aster':
-        return new AsterAdapter();
+        return new AsterAdapter(false);
+      case 'aster-spot':
+        return new AsterAdapter(true);
       default:
         throw new Error(`Unsupported source: ${sourceId}`);
     }

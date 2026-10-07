@@ -13,10 +13,16 @@ export class SpreadAnalyzer {
     const limit = config.limit || 200;
 
     // Fetch data from both sources in parallel using their respective symbols
+    const withSource = (name: string, symbol: string) => (err: unknown): never => {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`${name} (${symbol}): ${msg}`);
+    };
     const [data1, data2] = await Promise.all([
-      adapter1.fetchKlineData(config.symbol1, config.timeframe, limit),
-      adapter2.fetchKlineData(config.symbol2, config.timeframe, limit),
+      adapter1.fetchKlineData(config.symbol1, config.timeframe, limit).catch(withSource(config.source1.name, config.symbol1)),
+      adapter2.fetchKlineData(config.symbol2, config.timeframe, limit).catch(withSource(config.source2.name, config.symbol2)),
     ]);
+    if (data1.length === 0) throw new Error(`${config.source1.name} (${config.symbol1}): no price data`);
+    if (data2.length === 0) throw new Error(`${config.source2.name} (${config.symbol2}): no price data`);
 
     console.log('Source 1 (' + config.source1.id + '):', data1.length, 'points', data1.slice(0, 2));
     console.log('Source 2 (' + config.source2.id + '):', data2.length, 'points', data2.slice(0, 2));

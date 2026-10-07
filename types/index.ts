@@ -8,7 +8,27 @@ export interface PriceSource {
   id: string;
   name: string;
   type: SourceType;
+  group: 'CEX Spot' | 'CEX Futures' | 'Perp DEX' | 'DEX Chain';
+  inputKind: 'symbol' | 'contract';
   icon?: string;
+}
+
+// One tradable market of a source, `symbol` is what the kline adapter expects
+export interface MarketInfo {
+  symbol: string;
+  base: string;
+  quote: string;
+}
+
+// One token suggestion from on-chain DEX search
+export interface DexTokenSuggestion {
+  address: string;
+  symbol: string;
+  name: string;
+  quoteSymbol: string;
+  liquidityUsd: number;
+  priceUsd: number;
+  dex: string;
 }
 
 export interface KlineData {
