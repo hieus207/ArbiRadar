@@ -169,6 +169,7 @@ export default function SymbolInput({ source, value, onChange, preferredBase, ac
   const ring = accent === 'blue' ? 'focus:ring-blue-500' : 'focus:ring-red-500';
   const activeRow = accent === 'blue' ? 'bg-blue-600/40' : 'bg-red-600/40';
 
+  const preCount = markets?.filter((m) => m.preMarket).length ?? 0;
   const currentMarket = !isDex ? markets?.find((m) => m.symbol.toUpperCase() === value.toUpperCase()) : undefined;
   const status = isDex
     ? pickedToken
@@ -179,7 +180,7 @@ export default function SymbolInput({ source, value, onChange, preferredBase, ac
       : !markets
         ? 'Đang tải danh sách cặp…'
         : currentMarket
-          ? `${currentMarket.base}/${currentMarket.quote} · ${markets.length} cặp trên ${source.name}`
+          ? `${currentMarket.base}/${currentMarket.quote}${currentMarket.preMarket ? ' · Pre-market' : ''} · ${markets.length} cặp trên ${source.name}${preCount ? ` (${preCount} pre-market)` : ''}`
           : value
             ? `⚠ ${value} không có trong ${source.name} (${markets.length} cặp)`
             : `${markets.length} cặp trên ${source.name}`;
@@ -224,6 +225,11 @@ export default function SymbolInput({ source, value, onChange, preferredBase, ac
                   <span className="text-white">
                     <span className="font-semibold">{item.market.base}</span>
                     <span className="text-gray-400">/{item.market.quote}</span>
+                    {item.market.preMarket && (
+                      <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 align-middle">
+                        PRE
+                      </span>
+                    )}
                   </span>
                   <span className="text-xs text-gray-500 font-mono truncate">{item.market.symbol}</span>
                 </>

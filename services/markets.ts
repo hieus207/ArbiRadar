@@ -11,16 +11,20 @@ const LIGHTER_API = 'https://mainnet.zklighter.elliot.ai/api/v1';
 const BASE_ALIASES: Record<string, string> = { XBT: 'BTC' };
 const normBase = (b: string) => BASE_ALIASES[b.toUpperCase()] || b.toUpperCase();
 
-function m(symbol: string, base: string, quote: string): MarketInfo {
-  return { symbol, base: normBase(base), quote: quote.toUpperCase() };
+function m(symbol: string, base: string, quote: string, preMarket = false): MarketInfo {
+  const info: MarketInfo = { symbol, base: normBase(base), quote: quote.toUpperCase() };
+  if (preMarket) info.preMarket = true;
+  return info;
 }
 
-async function bybitAll(category: 'spot' | 'linear'): Promise<any[]> {
+// Bybit returns only Trading symbols unless `status` is given
+async function bybitAll(category: 'spot' | 'linear', status?: string): Promise<any[]> {
   const out: any[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < 20; page++) {
     const res = await httpGet('https://api.bybit.com/v5/market/instruments-info', {
       category,
+      status,
       limit: 1000,
       cursor,
     });
@@ -57,17 +61,23 @@ const loaders: Record<string, () => Promise<MarketInfo[]>> = {
       .filter((s: any) => s.state === 'live')
       .map((s: any) => {
         const [base, quote] = String(s.uly).split('-');
-        return m(s.instId, base, quote);
+        return m(s.instId, base, quote, s.ruleType === 'pre_market');
       });
   },
   'bybit-spot': async () =>
     (await bybitAll('spot'))
       .filter((s) => s.status === 'Trading')
       .map((s) => m(s.symbol, s.baseCoin, s.quoteCoin)),
-  'bybit-futures': async () =>
-    (await bybitAll('linear'))
-      .filter((s) => s.status === 'Trading' && s.contractType === 'LinearPerpetual')
-      .map((s) => m(s.symbol, s.baseCoin, s.quoteCoin)),
+  'bybit-futures': async () => {
+    const [trading, preLaunch] = await Promise.all([
+      bybitAll('linear'),
+      bybitAll('linear', 'PreLaunch').catch(() => []),
+    ]);
+    return [
+      ...trading.filter((s) => s.status === 'Trading' && s.contractType === 'LinearPerpetual'),
+      ...preLaunch.filter((s) => s.status === 'PreLaunch'),
+    ].map((s) => m(s.symbol, s.baseCoin, s.quoteCoin, s.status === 'PreLaunch' || !!s.isPreListing));
+  },
   'kucoin-spot': async () => {
     const res = await httpGet('https://api.kucoin.com/api/v2/symbols');
     return res.data
@@ -78,7 +88,7 @@ const loaders: Record<string, () => Promise<MarketInfo[]>> = {
     const res = await httpGet('https://api-futures.kucoin.com/api/v1/contracts/active');
     return res.data
       .filter((s: any) => s.status === 'Open')
-      .map((s: any) => m(s.symbol, s.baseCurrency, s.quoteCurrency));
+      .map((s: any) => m(s.symbol, s.baseCurrency, s.quoteCurrency, s.marketStage === 'PRE_MARKET'));
   },
   'gate-spot': async () => {
     const res = await httpGet('https://api.gateio.ws/api/v4/spot/currency_pairs');
@@ -92,7 +102,7 @@ const loaders: Record<string, () => Promise<MarketInfo[]>> = {
       .filter((s: any) => !s.in_delisting)
       .map((s: any) => {
         const [base, quote] = String(s.name).split('_');
-        return m(s.name, base, quote);
+        return m(s.name, base, quote, !!s.is_pre_market);
       });
   },
   'bitget-spot': async () => {
@@ -104,7 +114,7 @@ const loaders: Record<string, () => Promise<MarketInfo[]>> = {
   'bitget-futures': async () => {
     const res = await httpGet('https://api.bitget.com/api/v2/mix/market/contracts', { productType: 'USDT-FUTURES' });
     return res.data
-      .filter((s: any) => s.symbolStatus === 'normal')
+      .filter((s: any) => ['normal', 'limit_open', 'restrictedAPI'].includes(s.symbolStatus))
       .map((s: any) => m(s.symbol, s.baseCoin, s.quoteCoin));
   },
   hyperliquid: async () => {

@@ -18,6 +18,7 @@ export interface MarketInfo {
   symbol: string;
   base: string;
   quote: string;
+  preMarket?: boolean; // pre-market / pre-launch futures
 }
 
 // One token suggestion from on-chain DEX search
